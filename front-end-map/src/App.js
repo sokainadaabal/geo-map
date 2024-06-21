@@ -1,12 +1,12 @@
 import logo from './logo.svg';
 import './App.css';
 
-import Map from '../src/components/Map';
+import MapComponent from './components/MapComponent';
 
 function App() {
   return (
     <div className="App">
-      <Map/>
+      <MapComponent/>
     </div>
   );
 }
