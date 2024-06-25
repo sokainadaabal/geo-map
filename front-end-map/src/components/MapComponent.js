@@ -9,6 +9,8 @@ function MapComponent({ filterParams, layerVisibility }) {
   const mapEl = useRef(null);
   const [view, setView] = useState(null);
   const [layers, setLayers] = useState({});
+  const [editingFeature, setEditingFeature] = useState(null);
+  const [editingAttributes, setEditingAttributes] = useState({});
 
   useEffect(() => {
     let mapView;
@@ -26,8 +28,6 @@ function MapComponent({ filterParams, layerVisibility }) {
           "esri/Graphic"
         ]);
 
-        console.log("Modules chargés avec succès");
-
         const map = new Map({
           basemap: "topo-vector"
         });
@@ -38,8 +38,6 @@ function MapComponent({ filterParams, layerVisibility }) {
           center: [-7, 32],
           zoom: 5
         });
-
-        console.log("Vue de la carte créée");
 
         const geojsonLayerRegion = new GeoJSONLayer({
           url: "https://raw.githubusercontent.com/sokainadaabal/geo-map/main/data-map/regions.geojson",
@@ -60,7 +58,9 @@ function MapComponent({ filterParams, layerVisibility }) {
             title: 'Région: {NAME_1}',
             content: [{
               type: 'fields',
-              fieldInfos: ["*"]
+              fieldInfos: [{
+                fieldName: "*"
+              }]
             }]
           }
         });
@@ -84,7 +84,9 @@ function MapComponent({ filterParams, layerVisibility }) {
             title: 'Province: {NAME_2}',
             content: [{
               type: 'fields',
-              fieldInfos:["*"]
+              fieldInfos: [{
+                fieldName: "*"
+              }]
             }]
           }
         });
@@ -111,48 +113,16 @@ function MapComponent({ filterParams, layerVisibility }) {
             title: 'Station: {name}',
             content: [{
               type: 'fields',
-              fieldInfos: ["*"]
+              fieldInfos: [{
+                fieldName: "*"
+              }]
             }]
           }
         });
 
         const graphicsLayer = new GraphicsLayer();
 
-        console.log("Couches créées");
-
-        // Attendre que toutes les couches soient chargées avant de les ajouter à la carte
-        await Promise.all([
-          geojsonLayerRegion.load(),
-          geojsonLayerProvince.load(),
-          csvLayer.load()
-        ]).catch(error => {
-          console.error("Erreur lors du chargement des couches:", error);
-        });
-
-        console.log("Couches chargées");
-
         map.addMany([geojsonLayerRegion, geojsonLayerProvince, csvLayer, graphicsLayer]);
-
-        console.log("Couches ajoutées à la carte");
-
-        // Ajouter un point de test
-        const testPoint = new Point({
-          longitude: -7,
-          latitude: 32
-        });
-        const testGraphic = new Graphic({
-          geometry: testPoint,
-          symbol: {
-            type: "simple-marker",
-            color: [226, 119, 40],
-            size: 8,
-            outline: {
-              color: [255, 255, 255],
-              width: 2
-            }
-          }
-        });
-        graphicsLayer.add(testGraphic);
 
         const sketch = new Sketch({
           view: mapView,
@@ -169,40 +139,46 @@ function MapComponent({ filterParams, layerVisibility }) {
           stations: csvLayer
         });
 
-        // Ajuster l'étendue de la carte pour montrer toutes les couches
-        Promise.all([geojsonLayerRegion.when(), geojsonLayerProvince.when(), csvLayer.when()]).then(() => {
-          const fullExtent = geojsonLayerRegion.fullExtent.union(geojsonLayerProvince.fullExtent).union(csvLayer.fullExtent);
-          mapView.goTo(fullExtent);
-        });
+        // Attendre que toutes les couches soient chargées avant de définir l'étendue
+        await Promise.all([geojsonLayerRegion.load(), geojsonLayerProvince.load(), csvLayer.load()]);
 
-        // Add select functionality
+        const fullExtent = geojsonLayerRegion.fullExtent.union(geojsonLayerProvince.fullExtent).union(csvLayer.fullExtent);
+        mapView.goTo(fullExtent);
+
         mapView.on("click", (event) => {
-          const screenPoint = {
-            x: event.x,
-            y: event.y
-          };
+          mapView.hitTest(event).then((response) => {
+            const result = response.results.find(result => 
+              result.graphic && result.graphic.layer && result.graphic.layer.type === "feature"
+            );
+        
+            if (result && result.graphic) {
+              const graphic = result.graphic;
+              const attributes = graphic.attributes;
+              setEditingFeature(graphic);
+              setEditingAttributes(attributes);
 
-          mapView.hitTest(screenPoint).then((response) => {
-            const graphics = response.results.filter(result => result.graphic.layer);
-            if (graphics.length > 0) {
-              const graphic = graphics[0].graphic;
-              if (graphic.attributes) {
-                const content = Object.entries(graphic.attributes)
-                  .map(([key, value]) => `<b>${key}:</b> ${value}`)
-                  .join("<br>");
-                mapView.popup.open({
-                  title: "Object Attributes",
-                  content: content,
-                  location: event.mapPoint
-                });
+              let content = "<table>";
+              for (let key in attributes) {
+                if (attributes.hasOwnProperty(key)) {
+                  content += `<tr><th>${key}</th><td>${attributes[key]}</td></tr>`;
+                }
               }
+              content += "</table>";
+        
+              mapView.popup.open({
+                title: "Informations détaillées",
+                content: content,
+                location: event.mapPoint
+              });
             } else {
               mapView.popup.close();
+              setEditingFeature(null);
+              setEditingAttributes({});
             }
+          }).catch(error => {
+            console.error("Erreur lors du hitTest:", error);
           });
         });
-
-        console.log("Initialisation de la carte terminée");
 
       } catch (error) {
         console.error("Erreur lors de l'initialisation de la carte :", error);
@@ -223,7 +199,6 @@ function MapComponent({ filterParams, layerVisibility }) {
       Object.entries(layerVisibility).forEach(([key, value]) => {
         if (layers[key]) {
           layers[key].visible = value;
-          console.log(`Visibilité de la couche ${key} définie sur ${value}`);
         }
       });
     }
@@ -233,10 +208,8 @@ function MapComponent({ filterParams, layerVisibility }) {
     if (view && layers && filterParams) {
       if (filterParams.region && layers.stations) {
         layers.stations.definitionExpression = `region = '${filterParams.region}'`;
-        console.log(`Filtre appliqué : region = '${filterParams.region}'`);
       } else if (layers.stations) {
         layers.stations.definitionExpression = '1=1';
-        console.log("Filtre réinitialisé");
       }
     }
   }, [view, layers, filterParams]);
@@ -244,7 +217,15 @@ function MapComponent({ filterParams, layerVisibility }) {
   const updateBasemap = (basemap) => {
     if (view) {
       view.map.basemap = basemap;
-      console.log(`Fond de carte mis à jour : ${basemap}`);
+    }
+  };
+
+  const updateAttributes = (newAttributes) => {
+    if (editingFeature) {
+      editingFeature.attributes = { ...editingFeature.attributes, ...newAttributes };
+      setEditingAttributes(editingFeature.attributes);
+      // Ici, vous devriez également mettre à jour la couche de caractéristiques
+      editingFeature.layer.applyEdits({ updateFeatures: [editingFeature] });
     }
   };
 
@@ -256,6 +237,21 @@ function MapComponent({ filterParams, layerVisibility }) {
         <button style={{ padding: "10px 20px", fontSize: "16px", backgroundColor: "#0079c1", color: "white", border: "none", borderRadius: "5px", cursor: "pointer", margin: "5px" }} onClick={() => updateBasemap("satellite")}>Satellite</button>
         <button style={{ padding: "10px 20px", fontSize: "16px", backgroundColor: "#0079c1", color: "white", border: "none", borderRadius: "5px", cursor: "pointer", margin: "5px" }} onClick={() => updateBasemap("topo-vector")}>Topographic</button>
       </div>
+      {editingFeature && (
+        <div style={{ position: "absolute", bottom: "10px", left: "10px", background: "white", padding: "10px" }}>
+          <h3>Édition des attributs</h3>
+          {Object.entries(editingAttributes).map(([key, value]) => (
+            <div key={key}>
+              <label>{key}: </label>
+              <input 
+                type="text" 
+                value={value} 
+                onChange={(e) => updateAttributes({ [key]: e.target.value })}
+              />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
