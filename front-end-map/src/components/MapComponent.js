@@ -3,7 +3,6 @@ import "@arcgis/core/assets/esri/themes/light/main.css";
 import esriConfig from "@arcgis/core/config";
 import { loadModules } from "esri-loader";
 
-// Configure le chemin vers les ressources ArcGIS
 esriConfig.assetsPath = "https://js.arcgis.com/4.24/assets";
 
 function MapComponent({ filterParams, layerVisibility }) {
@@ -15,14 +14,19 @@ function MapComponent({ filterParams, layerVisibility }) {
     let mapView;
     const initializeMap = async () => {
       try {
-        const [Map, MapView, GeoJSONLayer, CSVLayer, Sketch, GraphicsLayer] = await loadModules([
+        const [Map, MapView, GeoJSONLayer, CSVLayer, Sketch, GraphicsLayer, FeatureLayer, Point, Graphic] = await loadModules([
           "esri/Map",
           "esri/views/MapView",
           "esri/layers/GeoJSONLayer",
           "esri/layers/CSVLayer",
           "esri/widgets/Sketch",
-          "esri/layers/GraphicsLayer"
+          "esri/layers/GraphicsLayer",
+          "esri/layers/FeatureLayer",
+          "esri/geometry/Point",
+          "esri/Graphic"
         ]);
+
+        console.log("Modules chargés avec succès");
 
         const map = new Map({
           basemap: "topo-vector"
@@ -35,16 +39,28 @@ function MapComponent({ filterParams, layerVisibility }) {
           zoom: 5
         });
 
+        console.log("Vue de la carte créée");
+
         const geojsonLayerRegion = new GeoJSONLayer({
           url: "https://raw.githubusercontent.com/sokainadaabal/geo-map/main/data-map/regions.geojson",
           outFields: ["*"],
+          visible: true,
+          renderer: {
+            type: "simple",
+            symbol: {
+              type: "simple-fill",
+              color: [255, 0, 0, 0.2],
+              outline: {
+                color: [255, 0, 0, 1],
+                width: 1
+              }
+            }
+          },
           popupTemplate: {
             title: 'Région: {NAME_1}',
             content: [{
               type: 'fields',
-              fieldInfos: [
-                { fieldName: 'NAME_1', label: 'Région' }
-              ]
+              fieldInfos: ["*"]
             }]
           }
         });
@@ -52,14 +68,23 @@ function MapComponent({ filterParams, layerVisibility }) {
         const geojsonLayerProvince = new GeoJSONLayer({
           url: "https://raw.githubusercontent.com/sokainadaabal/geo-map/main/data-map/provinces.geojson",
           outFields: ["*"],
+          visible: true,
+          renderer: {
+            type: "simple",
+            symbol: {
+              type: "simple-fill",
+              color: [0, 255, 0, 0.2],
+              outline: {
+                color: [0, 255, 0, 1],
+                width: 1
+              }
+            }
+          },
           popupTemplate: {
             title: 'Province: {NAME_2}',
             content: [{
               type: 'fields',
-              fieldInfos: [
-                { fieldName: 'NAME_1', label: 'Région' },
-                { fieldName: 'NAME_2', label: 'Province' }
-              ]
+              fieldInfos:["*"]
             }]
           }
         });
@@ -69,26 +94,70 @@ function MapComponent({ filterParams, layerVisibility }) {
           latitudeField: "latitude",
           longitudeField: "longitude",
           outFields: ["*"],
+          visible: true,
+          renderer: {
+            type: "simple",
+            symbol: {
+              type: "simple-marker",
+              color: [0, 0, 255],
+              size: 6,
+              outline: {
+                color: [255, 255, 255],
+                width: 1
+              }
+            }
+          },
           popupTemplate: {
             title: 'Station: {name}',
             content: [{
               type: 'fields',
-              fieldInfos: [
-                { fieldName: "name", label: "Nom" },
-                { fieldName: "latitude", label: "Latitude" },
-                { fieldName: "longitude", label: "Longitude" }
-              ]
+              fieldInfos: ["*"]
             }]
           }
         });
 
         const graphicsLayer = new GraphicsLayer();
 
+        console.log("Couches créées");
+
+        // Attendre que toutes les couches soient chargées avant de les ajouter à la carte
+        await Promise.all([
+          geojsonLayerRegion.load(),
+          geojsonLayerProvince.load(),
+          csvLayer.load()
+        ]).catch(error => {
+          console.error("Erreur lors du chargement des couches:", error);
+        });
+
+        console.log("Couches chargées");
+
         map.addMany([geojsonLayerRegion, geojsonLayerProvince, csvLayer, graphicsLayer]);
+
+        console.log("Couches ajoutées à la carte");
+
+        // Ajouter un point de test
+        const testPoint = new Point({
+          longitude: -7,
+          latitude: 32
+        });
+        const testGraphic = new Graphic({
+          geometry: testPoint,
+          symbol: {
+            type: "simple-marker",
+            color: [226, 119, 40],
+            size: 8,
+            outline: {
+              color: [255, 255, 255],
+              width: 2
+            }
+          }
+        });
+        graphicsLayer.add(testGraphic);
 
         const sketch = new Sketch({
           view: mapView,
-          layer: graphicsLayer
+          layer: graphicsLayer,
+          creationMode: "update"
         });
 
         mapView.ui.add(sketch, 'top-right');
@@ -100,23 +169,31 @@ function MapComponent({ filterParams, layerVisibility }) {
           stations: csvLayer
         });
 
-        // Gérer les clics sur la carte pour afficher les informations
+        // Ajuster l'étendue de la carte pour montrer toutes les couches
+        Promise.all([geojsonLayerRegion.when(), geojsonLayerProvince.when(), csvLayer.when()]).then(() => {
+          const fullExtent = geojsonLayerRegion.fullExtent.union(geojsonLayerProvince.fullExtent).union(csvLayer.fullExtent);
+          mapView.goTo(fullExtent);
+        });
+
+        // Add select functionality
         mapView.on("click", (event) => {
-          mapView.hitTest(event).then((response) => {
-            if (response.results.length) {
-              const graphic = response.results.filter(result => result.graphic.layer)[0]?.graphic;
-              if (graphic && graphic.popupTemplate) {
+          const screenPoint = {
+            x: event.x,
+            y: event.y
+          };
+
+          mapView.hitTest(screenPoint).then((response) => {
+            const graphics = response.results.filter(result => result.graphic.layer);
+            if (graphics.length > 0) {
+              const graphic = graphics[0].graphic;
+              if (graphic.attributes) {
+                const content = Object.entries(graphic.attributes)
+                  .map(([key, value]) => `<b>${key}:</b> ${value}`)
+                  .join("<br>");
                 mapView.popup.open({
-                  location: event.mapPoint,
-                  title: graphic.popupTemplate.title || "Informations de position",
-                  content: graphic.popupTemplate.content || "Aucune information disponible"
-                });
-              } else {
-                // Si le graphic n'a pas de popupTemplate, on affiche un message générique
-                mapView.popup.open({
-                  location: event.mapPoint,
-                  title: "Informations de position",
-                  content: "Aucune information détaillée disponible pour cet élément."
+                  title: "Object Attributes",
+                  content: content,
+                  location: event.mapPoint
                 });
               }
             } else {
@@ -124,6 +201,8 @@ function MapComponent({ filterParams, layerVisibility }) {
             }
           });
         });
+
+        console.log("Initialisation de la carte terminée");
 
       } catch (error) {
         console.error("Erreur lors de l'initialisation de la carte :", error);
@@ -144,6 +223,7 @@ function MapComponent({ filterParams, layerVisibility }) {
       Object.entries(layerVisibility).forEach(([key, value]) => {
         if (layers[key]) {
           layers[key].visible = value;
+          console.log(`Visibilité de la couche ${key} définie sur ${value}`);
         }
       });
     }
@@ -153,8 +233,10 @@ function MapComponent({ filterParams, layerVisibility }) {
     if (view && layers && filterParams) {
       if (filterParams.region && layers.stations) {
         layers.stations.definitionExpression = `region = '${filterParams.region}'`;
+        console.log(`Filtre appliqué : region = '${filterParams.region}'`);
       } else if (layers.stations) {
         layers.stations.definitionExpression = '1=1';
+        console.log("Filtre réinitialisé");
       }
     }
   }, [view, layers, filterParams]);
@@ -162,6 +244,7 @@ function MapComponent({ filterParams, layerVisibility }) {
   const updateBasemap = (basemap) => {
     if (view) {
       view.map.basemap = basemap;
+      console.log(`Fond de carte mis à jour : ${basemap}`);
     }
   };
 
